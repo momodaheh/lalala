@@ -1,0 +1,30 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`快照测试 对象快照 - toMatchSnapshot 1`] = `
+{
+  "age": 25,
+  "hobbies": [
+    "读书",
+    "游泳",
+  ],
+  "id": 1,
+  "name": "张三",
+}
+`;
+
+exports[`快照测试 快照测试的实际用途 1`] = `
+{
+  "api": {
+    "baseUrl": "https://api.example.com",
+    "headers": {
+      "Authorization": "Bearer xxx",
+      "Content-Type": "application/json",
+    },
+    "timeout": 5000,
+  },
+  "features": {
+    "enableCache": true,
+    "maxRetries": 3,
+  },
+}
+`;

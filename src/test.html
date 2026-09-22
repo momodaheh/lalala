@@ -1,0 +1,1221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理系统界面优先渲染</title>
+    <style>
+        /* 基础样式 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Microsoft YaHei', sans-serif;
+        }
+
+        .management-system {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            background-color: #f5f7fa;
+        }
+
+        /* 加载遮罩 */
+        .loading-mask {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #e0e0e0;
+            border-top: 5px solid #1890ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* 组件容器 */
+        .component-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            padding: 20px;
+        }
+
+        /* 组件基础样式 */
+        .system-component {
+            position: absolute;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            padding: 16px;
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+
+        .component-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .component-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .component-priority {
+            font-size: 12px;
+            color: #6b7280;
+            background: #f3f4f6;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+
+        .component-content {
+            width: 100%;
+            height: calc(100% - 40px);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #4b5563;
+        }
+
+        /* 组件加载状态 */
+        .component-loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .component-loading::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 30px;
+            height: 30px;
+            border: 3px solid #e0e0e0;
+            border-top: 3px solid #1890ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        /* 异常提示 */
+        .component-error {
+            background: #fee2e2;
+            color: #dc2626;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+    </style>
+</head>
+<body>
+    <div class="management-system">
+        <!-- 加载遮罩 -->
+        <div class="loading-mask" id="loadingMask">
+            <div class="loading-spinner"></div>
+            <p>加载中... 优先渲染核心组件</p>
+        </div>
+
+        <!-- 组件容器 -->
+        <div class="component-container" id="componentContainer"></div>
+    </div>
+
+    <script>
+        /**
+         * 组件依赖类型
+         * @typedef {'data' | 'interaction' | 'render'} DependencyType
+         */
+
+        /**
+         * 组件元数据接口
+         * @interface ComponentMetadata
+         * @property {string} id - 组件唯一标识
+         * @property {string} type - 组件类型（chart/table/map/button/select）
+         * @property {Object} props - 组件属性
+         * @property {number} props.width - 宽度（像素）
+         * @property {number} props.height - 高度（像素）
+         * @property {number} props.x - 横坐标（像素）
+         * @property {number} props.y - 纵坐标（像素）
+         * @property {string} [props.dataApi] - 数据接口地址
+         * @property {number} props.defaultPriority - 默认优先级（1-10）
+         * @property {Object} [props.extra] - 额外属性
+         * @property {Array<{targetId: string, type: DependencyType}>} [dependencies] - 依赖关系
+         */
+
+        /**
+         * 标准组件元数据（属性清洗后）
+         * @interface StandardComponentMetadata
+         * @extends ComponentMetadata
+         * @property {string} businessModule - 所属业务模块
+         * @property {Object} resource需求 - 渲染资源需求
+         * @property {number} resource需求.cpu - CPU占用率（0-1）
+         * @property {number} resource需求.gpu - GPU占用率（0-1）
+         * @property {number} resource需求.memory - 内存需求（MB）
+         * @property {number} resource需求.loadTime - 加载耗时（ms）
+         */
+
+        /**
+         * 组件优先级序列项
+         * @interface ComponentPriorityItem
+         * @extends StandardComponentMetadata
+         * @property {number} priorityScore - 优先级得分
+         * @property {number} relevanceScore - 关联度得分
+         */
+
+        /**
+         * 资源状态数据
+         * @interface ResourceState
+         * @property {number} cpuAvailable - 可用CPU容量（0-1）
+         * @property {number} gpuAvailable - 可用GPU容量（0-1）
+         * @property {number} memoryAvailable - 可用内存（MB）
+         * @property {number} bandwidth - 网络带宽（Mbps）
+         */
+
+        // 配置常量
+        const CONFIG = {
+            // 权重分配系数（a+b=1）
+            WEIGHT_COEFFICIENT: { a: 0.6, b: 0.4 },
+            // 放大系数（映射到1-10分制）
+            AMPLIFICATION_FACTOR: 10,
+            // 依赖类型权重
+            DEPENDENCY_WEIGHT: { data: 0.8, interaction: 0.6, render: 0.4 },
+            // 依赖强度（直接/间接）
+            DEPENDENCY_STRENGTH: { direct: 1, indirect: [0.5, 0.25] },
+            // 核心组件阈值
+            CORE_COMPONENT_THRESHOLD: 8.0,
+            // 资源权重（用于计算综合资源充足度）
+            RESOURCE_WEIGHT: { cpu: 0.3, gpu: 0.2, memory: 0.3, bandwidth: 0.2 },
+            // 加载超时阈值（ms）
+            LOAD_TIMEOUT: 5000,
+            // 预留资源比例（应对突发情况）
+            RESOURCE_RESERVE_RATIO: 0.1
+        };
+
+              /**
+         * 界面组件优先级配置库
+         * @type {ComponentMetadata[]}
+         */
+        const COMPONENT_PRIORITY_CONFIG_LIBRARY = [
+            {
+                id: 'map_world',
+                type: 'map',
+                props: {
+                    width: 1200,
+                    height: 600,
+                    x: 0,
+                    y: 0,
+                    dataApi: '/api/map/world',
+                    defaultPriority: 8,
+                    extra: { mapType: 'world', title: '全球业务分布地图' }
+                },
+                dependencies: [
+                    { targetId: 'select_region', type: 'data' }
+                ]
+            },
+            {
+                id: 'chart_order_trend',
+                type: 'chart',
+                props: {
+                    width: 800,
+                    height: 400,
+                    x: 0,
+                    y: 620,
+                    dataApi: '/api/chart/order/trend',
+                    defaultPriority: 7,
+                    extra: { chartType: 'line', title: '订单趋势分析' }
+                },
+                dependencies: [
+                    { targetId: 'select_region', type: 'data' },
+                    { targetId: 'map_world', type: 'interaction' }
+                ]
+            },
+            {
+                id: 'table_task_list',
+                type: 'table',
+                props: {
+                    width: 400,
+                    height: 400,
+                    x: 820,
+                    y: 620,
+                    dataApi: '/api/table/task',
+                    defaultPriority: 6,
+                    extra: { title: '待办任务列表' }
+                },
+                dependencies: [
+                    { targetId: 'select_region', type: 'data' }
+                ]
+            },
+            {
+                id: 'select_region',
+                type: 'select',
+                props: {
+                    width: 200,
+                    height: 40,
+                    x: 20,
+                    y: 20,
+                    defaultPriority: 5,
+                    extra: { title: '区域选择', options: ['全球', '亚洲', '欧洲', '美洲', '非洲'] }
+                },
+                dependencies: []
+            },
+            {
+                id: 'button_export',
+                type: 'button',
+                props: {
+                    width: 120,
+                    height: 40,
+                    x: 240,
+                    y: 20,
+                    defaultPriority: 3,
+                    extra: { label: '导出数据', type: 'primary' }
+                },
+                dependencies: [
+                    { targetId: 'map_world', type: 'render' },
+                    { targetId: 'chart_order_trend', type: 'render' }
+                ]
+            },
+            {
+                id: 'chart_revenue',
+                type: 'chart',
+                props: {
+                    width: 600,
+                    height: 300,
+                    x: 380,
+                    y: 20,
+                    dataApi: '/api/chart/revenue',
+                    defaultPriority: 6,
+                    extra: { chartType: 'pie', title: '营收占比分析' }
+                },
+                dependencies: [
+                    { targetId: 'select_region', type: 'data' }
+                ]
+            }
+        ];
+
+        /**
+         * 用户行为偏好库
+         * @type {Object}
+         */
+        const USER_BEHAVIOR_PREFERENCE_LIBRARY = {
+            componentClickFreq: {
+                'map_world': 128,
+                'chart_order_trend': 96,
+                'table_task_list': 72,
+                'select_region': 156,
+                'button_export': 48,
+                'chart_revenue': 64
+            },
+            componentStayTime: {
+                'map_world': 180,
+                'chart_order_trend': 120,
+                'table_task_list': 90,
+                'select_region': 60,
+                'button_export': 10,
+                'chart_revenue': 80
+            },
+            businessModuleImportance: {
+                'map': 0.9,
+                'chart': 0.8,
+                'table': 0.7,
+                'button': 0.4,
+                'select': 0.6
+            }
+        };
+
+              /**
+         * 属性清洗
+         * @param {ComponentMetadata[]} rawMetadata - 原始组件元数据
+         * @returns {StandardComponentMetadata[]} 标准组件元数据
+         */
+        function cleanComponentMetadata(rawMetadata) {
+            return rawMetadata.map(metadata => {
+                //筛除无效信息
+                const cleanedProps = { ...metadata.props };
+                delete cleanedProps.invalidField; // 删除无效字段
+
+                //补全缺失属性
+                const businessModule = metadata.type;
+                const dependencies = metadata.dependencies || [];
+
+                //格式标准化（修正超出画布的位置参数）
+                const maxWidth = window.innerWidth - 40;
+                const maxHeight = window.innerHeight - 40;
+                cleanedProps.x = Math.min(cleanedProps.x, maxWidth - cleanedProps.width);
+                cleanedProps.y = Math.min(cleanedProps.y, maxHeight - cleanedProps.height);
+                cleanedProps.width = Math.min(cleanedProps.width, maxWidth);
+                cleanedProps.height = Math.min(cleanedProps.height, maxHeight);
+
+                //补充资源需求参数
+                const resource需求 = getResourceDemandByType(metadata.type);
+
+                return {
+                    ...metadata,
+                    props: cleanedProps,
+                    businessModule,
+                    dependencies,
+                    resource需求
+                };
+            });
+        }
+
+        /**
+         * 根据组件类型获取资源需求参数
+         * @param {string} type - 组件类型
+         * @returns {Object} 资源需求参数
+         */
+        function getResourceDemandByType(type) {
+            switch (type) {
+                case 'map':
+                    return { cpu: 0.3, gpu: 0.6, memory: 512, loadTime: 1800 };
+                case 'chart':
+                    return { cpu: 0.2, gpu: 0.3, memory: 256, loadTime: 1200 };
+                case 'table':
+                    return { cpu: 0.15, gpu: 0.1, memory: 128, loadTime: 800 };
+                case 'button':
+                    return { cpu: 0.05, gpu: 0.05, memory: 16, loadTime: 200 };
+                case 'select':
+                    return { cpu: 0.08, gpu: 0.05, memory: 32, loadTime: 300 };
+                default:
+                    return { cpu: 0.1, gpu: 0.1, memory: 64, loadTime: 500 };
+            }
+        }
+
+        /**
+         *依赖关系解析
+         * @param {StandardComponentMetadata[]} standardMetadata - 标准组件元数据
+         * @returns {Object} 组件依赖图谱
+         */
+        function parseDependencyRelations(standardMetadata) {
+            const nodes = standardMetadata.map(meta => meta.id);
+            const edges = [];
+
+            standardMetadata.forEach(meta => {
+                meta.dependencies.forEach(dep => {
+                    if (nodes.includes(dep.targetId)) {
+                        edges.push({
+                            source: meta.id,
+                            target: dep.targetId,
+                            type: dep.type,
+                            weight: CONFIG.DEPENDENCY_WEIGHT[dep.type]
+                        });
+                    }
+                });
+            });
+
+            return {
+                nodes,
+                edges,
+                getDependencies: (nodeId) => edges.filter(edge => edge.source === nodeId),
+                getDependents: (nodeId) => edges.filter(edge => edge.target === nodeId)
+            };
+        }
+
+        /**
+         *计算组件优先级权重融合
+         * @param {StandardComponentMetadata} component - 标准组件元数据
+         * @returns {number} 组件初始优先级得分
+         */
+        function calculatePriorityScore(component) {
+            //计算用户行为权重
+            const clickFreq = USER_BEHAVIOR_PREFERENCE_LIBRARY.componentClickFreq[component.id] || 0;
+            const stayTime = USER_BEHAVIOR_PREFERENCE_LIBRARY.componentStayTime[component.id] || 0;
+            
+            // 归一化到0-1
+            const maxClickFreq = Math.max(...Object.values(USER_BEHAVIOR_PREFERENCE_LIBRARY.componentClickFreq));
+            const maxStayTime = Math.max(...Object.values(USER_BEHAVIOR_PREFERENCE_LIBRARY.componentStayTime));
+            const normalizedClickFreq = maxClickFreq > 0 ? clickFreq / maxClickFreq : 0;
+            const normalizedStayTime = maxStayTime > 0 ? stayTime / maxStayTime : 0;
+            const userBehaviorWeight = (normalizedClickFreq + normalizedStayTime) / 2;
+
+            //获取业务模块权重
+            const businessModuleWeight = USER_BEHAVIOR_PREFERENCE_LIBRARY.businessModuleImportance[component.businessModule] || 0.5;
+
+            //加权修正计算
+            const { a, b } = CONFIG.WEIGHT_COEFFICIENT;
+            const { AMPLIFICATION_FACTOR } = CONFIG;
+            const defaultPriority = component.props.defaultPriority;
+
+            let priorityScore = defaultPriority * (a * userBehaviorWeight + b * businessModuleWeight) * AMPLIFICATION_FACTOR;
+            
+            //边界处理
+            priorityScore = Math.max(1, Math.min(10, priorityScore));
+
+            return parseFloat(priorityScore.toFixed(2));
+        }
+
+        /**
+         *计算组件间关联度
+         * @param {Object} dependencyGraph - 组件依赖图谱
+         * @param {string} sourceId - 源组件ID
+         * @param {string} targetId - 目标组件ID
+         * @returns {number} 关联度得分
+         */
+        function calculateRelevanceScore(dependencyGraph, sourceId, targetId) {
+            if (sourceId === targetId) return 1.0;
+
+            //计算直接关联度
+            const directEdge = dependencyGraph.edges.find(
+                edge => (edge.source === sourceId && edge.target === targetId) || 
+                       (edge.source === targetId && edge.target === sourceId)
+            );
+
+            let directRelevance = 0;
+            if (directEdge) {
+                directRelevance = directEdge.weight * CONFIG.DEPENDENCY_STRENGTH.direct;
+            }
+
+            //计算间接关联度
+            let indirectRelevance = 0;
+
+            // 路径长度为2
+            const middleNodes = dependencyGraph.nodes.filter(
+                node => node !== sourceId && node !== targetId
+            );
+
+            middleNodes.forEach(middleNode => {
+                const edge1 = dependencyGraph.edges.find(
+                    edge => (edge.source === sourceId && edge.target === middleNode) || 
+                           (edge.source === middleNode && edge.target === sourceId)
+                );
+                const edge2 = dependencyGraph.edges.find(
+                    edge => (edge.source === middleNode && edge.target === targetId) || 
+                           (edge.source === targetId && edge.target === middleNode)
+                );
+
+                if (edge1 && edge2) {
+                    const strength = CONFIG.DEPENDENCY_STRENGTH.indirect[0]; // 路径长度2的强度
+                    indirectRelevance += (edge1.weight + edge2.weight) / 2 * strength;
+                }
+            });
+
+            // 路径长度为3
+            if (middleNodes.length >= 2) {
+                for (let i = 0; i < middleNodes.length; i++) {
+                    for (let j = i + 1; j < middleNodes.length; j++) {
+                        const n1 = middleNodes[i];
+                        const n2 = middleNodes[j];
+                        
+                        const edge1 = dependencyGraph.edges.find(edge => 
+                            (edge.source === sourceId && edge.target === n1) || (edge.source === n1 && edge.target === sourceId)
+                        );
+                        const edge2 = dependencyGraph.edges.find(edge => 
+                            (edge.source === n1 && edge.target === n2) || (edge.source === n2 && edge.target === n1)
+                        );
+                        const edge3 = dependencyGraph.edges.find(edge => 
+                            (edge.source === n2 && edge.target === targetId) || (edge.source === targetId && edge.target === n2)
+                        );
+
+                        if (edge1 && edge2 && edge3) {
+                            const strength = CONFIG.DEPENDENCY_STRENGTH.indirect[1]; // 路径长度3的强度
+                            indirectRelevance += (edge1.weight + edge2.weight + edge3.weight) / 3 * strength;
+                        }
+                    }
+                }
+            }
+
+            // 总关联度
+            const totalRelevance = Math.min(1.0, directRelevance + indirectRelevance);
+            return parseFloat(totalRelevance.toFixed(2));
+        }
+
+        /**
+         * 构建组件优先级序列
+         * @param {StandardComponentMetadata[]} standardMetadata - 标准组件元数据
+         * @param {Object} dependencyGraph - 组件依赖图谱
+         * @returns {ComponentPriorityItem[]} 组件优先级序列
+         */
+        function buildComponentPrioritySequence(standardMetadata, dependencyGraph) {
+            // 1. 计算每个组件的优先级得分和关联度
+            const componentsWithScores = standardMetadata.map(component => {
+                const priorityScore = calculatePriorityScore(component);
+                
+                // 计算与其他所有组件的平均关联度
+                let totalRelevance = 0;
+                let count = 0;
+                dependencyGraph.nodes.forEach(targetId => {
+                    if (component.id !== targetId) {
+                        totalRelevance += calculateRelevanceScore(dependencyGraph, component.id, targetId);
+                        count++;
+                    }
+                });
+                const relevanceScore = count > 0 ? parseFloat((totalRelevance / count).toFixed(2)) : 0;
+
+                return {
+                    ...component,
+                    priorityScore,
+                    relevanceScore
+                };
+            });
+
+            // 排序
+            componentsWithScores.sort((a, b) => {
+                if (b.priorityScore !== a.priorityScore) {
+                    return b.priorityScore - a.priorityScore;
+                }
+                return b.relevanceScore - a.relevanceScore;
+            });
+
+            return componentsWithScores;
+        }
+
+        /**
+         *层次排序筛选核心组件
+         * @param {ComponentPriorityItem[]} prioritySequence - 组件优先级序列
+         * @returns {ComponentPriorityItem[]} 核心优先组件序列
+         */
+        function filterCoreComponents(prioritySequence) {
+            //构建层次结构模型
+            const criteriaWeights = {
+                functionImportance: 0.4,    // 功能重要性
+                userDependency: 0.3,        // 用户依赖度
+                businessRelevance: 0.3      // 业务关联度
+            };
+
+            // 计算每个组件的综合重要性得分
+            const componentsWithComprehensiveScore = prioritySequence.map(component => {
+                // 功能重要性
+                const functionImportance = component.priorityScore / 10;
+
+                // 用户依赖度
+                const clickFreq = USER_BEHAVIOR_PREFERENCE_LIBRARY.componentClickFreq[component.id] || 0;
+                const maxClickFreq = Math.max(...Object.values(USER_BEHAVIOR_PREFERENCE_LIBRARY.componentClickFreq));
+                const userDependency = maxClickFreq > 0 ? clickFreq / maxClickFreq : 0;
+
+                // 业务关联度
+                const businessRelevance = component.relevanceScore;
+
+                // 综合得分
+                const comprehensiveScore = 
+                    functionImportance * criteriaWeights.functionImportance +
+                    userDependency * criteriaWeights.userDependency +
+                    businessRelevance * criteriaWeights.businessRelevance;
+
+                // 映射到1-10分制
+                const normalizedScore = parseFloat((comprehensiveScore * 10).toFixed(2));
+
+                return {
+                    ...component,
+                    comprehensiveScore: normalizedScore
+                };
+            });
+
+            // 筛选综合得分高于阈值的核心组件
+            const coreComponents = componentsWithComprehensiveScore
+                .filter(component => component.comprehensiveScore >= CONFIG.CORE_COMPONENT_THRESHOLD)
+                .sort((a, b) => b.comprehensiveScore - a.comprehensiveScore);
+
+            return coreComponents;
+        }
+
+        /**
+         *渲染资源维度扩张
+         * @param {ComponentPriorityItem[]} prioritySequence - 组件优先级序列
+         * @returns {ComponentPriorityItem[]} 资源适配序列
+         */
+        function expandResourceDimension(prioritySequence) {
+            // 资源需求维度已在属性清洗时添加，直接返回
+            return [...prioritySequence];
+        }
+
+        /**
+         *获取系统实时资源状态
+         * @returns {ResourceState} 实时资源状态数据
+         */
+        function getRealTimeResourceState() {
+            // 获取系统资源状态
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    // 模拟不同资源充足度场景
+                    resolve({
+                        cpuAvailable: 0.75,    // 75%可用
+                        gpuAvailable: 0.6,     // 60%可用
+                        memoryAvailable: 2048, // 2GB可用内存
+                        bandwidth: 100         // 100Mbps带宽
+                    });
+                }, 300);
+            });
+        }
+
+        /**
+         *计算资源充足度
+         * @param {ResourceState} resourceState - 实时资源状态
+         * @param {ComponentPriorityItem[]} resourceAdaptationSequence - 资源适配序列
+         * @returns {number} 综合资源充足度
+         */
+        function calculateResourceAdequacy(resourceState, resourceAdaptationSequence) {
+            // 计算各组件总资源需求
+            const totalResourceDemand = {
+                cpu: 0,
+                gpu: 0,
+                memory: 0,
+                bandwidth: 0 // 简化计算，带宽需求按加载耗时比例分配
+            };
+
+            resourceAdaptationSequence.forEach(component => {
+                totalResourceDemand.cpu += component.resource需求.cpu;
+                totalResourceDemand.gpu += component.resource需求.gpu;
+                totalResourceDemand.memory += component.resource需求.memory;
+                // 带宽需求简化
+                totalResourceDemand.bandwidth += component.resource需求.loadTime / 1000;
+            });
+
+            //计算单类资源充足度
+            const singleResourceAdequacy = {
+                cpu: totalResourceDemand.cpu > 0 
+                    ? Math.min(1.0, resourceState.cpuAvailable / totalResourceDemand.cpu) 
+                    : 1.0,
+                gpu: totalResourceDemand.gpu > 0 
+                    ? Math.min(1.0, resourceState.gpuAvailable / totalResourceDemand.gpu) 
+                    : 1.0,
+                memory: totalResourceDemand.memory > 0 
+                    ? Math.min(1.0, resourceState.memoryAvailable / totalResourceDemand.memory) 
+                    : 1.0,
+                bandwidth: totalResourceDemand.bandwidth > 0 
+                    ? Math.min(1.0, resourceState.bandwidth / totalResourceDemand.bandwidth) 
+                    : 1.0
+            };
+
+            //加权融合计算综合资源充足度
+            const { cpu, gpu, memory, bandwidth } = CONFIG.RESOURCE_WEIGHT;
+            const comprehensiveAdequacy = 
+                singleResourceAdequacy.cpu * cpu +
+                singleResourceAdequacy.gpu * gpu +
+                singleResourceAdequacy.memory * memory +
+                singleResourceAdequacy.bandwidth * bandwidth;
+
+            return parseFloat(comprehensiveAdequacy.toFixed(2));
+        }
+
+        /**
+         * 自适应注意力机制校准优先级
+         * @param {ComponentPriorityItem[]} resourceAdaptationSequence - 资源适配序列
+         * @param {ResourceState} resourceState - 实时资源状态
+         * @param {number} resourceAdequacy - 综合资源充足度
+         * @returns {ComponentPriorityItem[]} 精准优先组件序列
+         */
+        function calibratePriorityWithAttentionMechanism(resourceAdaptationSequence, resourceState, resourceAdequacy) {
+            // 自适应注意力机制简化实现
+            const calibratedComponents = resourceAdaptationSequence.map(component => {
+                const { cpu, gpu, memory } = component.resource需求 || { cpu: 0, gpu: 0, memory: 0 };
+
+                // 计算组件资源需求与系统资源的匹配度
+                const cpuMatch = resourceState.cpuAvailable >= cpu ? 1.0 : resourceState.cpuAvailable / cpu;
+                const gpuMatch = resourceState.gpuAvailable >= gpu ? 1.0 : resourceState.gpuAvailable / gpu;
+                const memoryMatch = resourceState.memoryAvailable >= memory ? 1.0 : resourceState.memoryAvailable / memory;
+
+                // 资源匹配度得分
+                const resourceMatchScore = (cpuMatch + gpuMatch + memoryMatch) / 3;
+
+                // 结合资源充足度调整优先级
+                let calibratedScore;
+                if (resourceAdequacy > 0.7) {
+                    // 资源充足
+                    calibratedScore = component.priorityScore * 0.7 + resourceMatchScore * 10 * 0.3;
+                } else if (resourceAdequacy > 0.4) {
+                    // 资源中等
+                    calibratedScore = component.priorityScore * 0.5 + resourceMatchScore * 10 * 0.5;
+                } else {
+                    // 资源紧张
+                    calibratedScore = component.priorityScore * 0.3 + resourceMatchScore * 10 * 0.7;
+                }
+
+                return {
+                    ...component,
+                    calibratedScore: parseFloat(calibratedScore.toFixed(2))
+                };
+            });
+
+            // 按校准后的得分排序
+            calibratedComponents.sort((a, b) => b.calibratedScore - a.calibratedScore);
+
+            return calibratedComponents;
+        }
+
+        /**
+         * 并行渲染顺序筛选
+         * @param {ComponentPriorityItem[]} coreSequence - 核心优先组件序列
+         * @param {ComponentPriorityItem[]} preciseSequence - 精准优先组件序列
+         * @param {Object} dependencyGraph - 组件依赖图谱
+         * @returns {ComponentPriorityItem[]} 目标渲染组件序列
+         */
+        function filterParallelRenderSequence(coreSequence, preciseSequence, dependencyGraph) {
+            const targetSequence = [];
+            const coreComponentIds = new Set(coreSequence.map(c => c.id));
+            const addedComponentIds = new Set();
+
+            //先添加核心组件，保持核心序列顺序
+            coreSequence.forEach(component => {
+                targetSequence.push(component);
+                addedComponentIds.add(component.id);
+            });
+
+            //处理精准序列中的非核心组件
+            preciseSequence.forEach(component => {
+                if (addedComponentIds.has(component.id)) return;
+
+                //查找该组件依赖的核心组件
+                const dependencies = dependencyGraph.getDependencies(component.id);
+                const coreDependencies = dependencies.filter(dep => coreComponentIds.has(dep.target));
+
+                if (coreDependencies.length > 0) {
+                    // 有核心依赖
+                    const depCoreComponentId = coreDependencies[0].target;
+                    const depIndex = targetSequence.findIndex(c => c.id === depCoreComponentId);
+
+                    if (depIndex !== -1) {
+                        // 插入到依赖组件后面，且在所有后续核心组件之前
+                        targetSequence.splice(depIndex + 1, 0, component);
+                        addedComponentIds.add(component.id);
+                    }
+                } else {
+                    // 无核心依赖
+                }
+            });
+
+            //添加剩余的非核心组件
+            preciseSequence.forEach(component => {
+                if (!addedComponentIds.has(component.id)) {
+                    targetSequence.push(component);
+                    addedComponentIds.add(component.id);
+                }
+            });
+
+            return targetSequence;
+        }
+
+        /**
+         * 贪心算法进行渲染资源分配
+         * @param {ComponentPriorityItem[]} targetSequence - 目标渲染组件序列
+         * @param {ResourceState} resourceState - 实时资源状态
+         * @returns {Object} 资源分配结果
+         */
+        function allocateRenderResources(targetSequence, resourceState) {
+            const resourceAllocation = {};
+            const reservedResources = {
+                cpu: resourceState.cpuAvailable * CONFIG.RESOURCE_RESERVE_RATIO,
+                gpu: resourceState.gpuAvailable * CONFIG.RESOURCE_RESERVE_RATIO,
+                memory: resourceState.memoryAvailable * CONFIG.RESOURCE_RESERVE_RATIO,
+                bandwidth: resourceState.bandwidth * CONFIG.RESOURCE_RESERVE_RATIO
+            };
+
+            const availableResources = {
+                cpu: resourceState.cpuAvailable - reservedResources.cpu,
+                gpu: resourceState.gpuAvailable - reservedResources.gpu,
+                memory: resourceState.memoryAvailable - reservedResources.memory,
+                bandwidth: resourceState.bandwidth - reservedResources.bandwidth
+            };
+
+            // 贪心分配
+            targetSequence.forEach(component => {
+                const { cpu, gpu, memory, loadTime } = component.resource需求;
+
+                // 分配资源
+                resourceAllocation[component.id] = {
+                    cpu: Math.min(cpu, availableResources.cpu),
+                    gpu: Math.min(gpu, availableResources.gpu),
+                    memory: Math.min(memory, availableResources.memory),
+                    bandwidth: Math.min(loadTime / 1000, availableResources.bandwidth)
+                };
+
+                // 更新可用资源
+                availableResources.cpu -= resourceAllocation[component.id].cpu;
+                availableResources.gpu -= resourceAllocation[component.id].gpu;
+                availableResources.memory -= resourceAllocation[component.id].memory;
+                availableResources.bandwidth -= resourceAllocation[component.id].bandwidth;
+            });
+
+            return {
+                resourceAllocation,
+                reservedResources,
+                availableResourcesAfterAllocation: availableResources
+            };
+        }
+
+        /**
+         *执行界面渲染
+         * @param {ComponentPriorityItem[]} targetSequence - 目标渲染组件序列
+         * @param {Object} resourceAllocation - 资源分配结果
+         */
+        async function executeRender(targetSequence, resourceAllocation) {
+            const componentContainer = document.getElementById('componentContainer');
+            const loadingMask = document.getElementById('loadingMask');
+
+            // 批量创建组件元素
+            for (let i = 0; i < targetSequence.length; i++) {
+                const component = targetSequence[i];
+                const allocation = resourceAllocation[component.id];
+
+                // 创建组件容器
+                const componentElement = document.createElement('div');
+                componentElement.id = `component_${component.id}`;
+                componentElement.className = `system-component component-loading`;
+                componentElement.style.width = `${component.props.width}px`;
+                componentElement.style.height = `${component.props.height}px`;
+                componentElement.style.left = `${component.props.x}px`;
+                componentElement.style.top = `${component.props.y}px`;
+
+                // 组件头部
+                const header = document.createElement('div');
+                header.className = 'component-header';
+                
+                const title = document.createElement('div');
+                title.className = 'component-title';
+                title.textContent = component.props.extra.title || component.id;
+                
+                const priorityBadge = document.createElement('div');
+                priorityBadge.className = 'component-priority';
+                priorityBadge.textContent = `优先级：${component.priorityScore}`;
+                
+                header.appendChild(title);
+                header.appendChild(priorityBadge);
+
+                // 组件内容
+                const content = document.createElement('div');
+                content.className = 'component-content';
+                content.textContent = '加载中...';
+
+                componentElement.appendChild(header);
+                componentElement.appendChild(content);
+                componentContainer.appendChild(componentElement);
+
+                // 资源分配检查
+                if (allocation.cpu < component.resource需求.cpu * 0.5) {
+                    // 资源不足，降级渲染
+                    content.textContent = '资源不足，降级渲染';
+                    componentElement.classList.remove('component-loading');
+                    continue;
+                }
+
+                try {
+                    // 组件加载
+                    const loadResult = await loadComponentData(component, allocation);
+                    
+                    // 更新组件内容
+                    updateComponentContent(componentElement, component, loadResult);
+                    componentElement.classList.remove('component-loading');
+
+                    // 第一个核心组件加载完成后隐藏加载遮罩
+                    if (i === 0 && loadingMask) {
+                        loadingMask.style.display = 'none';
+                    }
+                } catch (error) {
+                    // 加载失败处理
+                    componentElement.classList.remove('component-loading');
+                    componentElement.classList.add('component-error');
+                    content.innerHTML = `<div>加载失败</div><div style="font-size:12px;margin-top:8px;">${error.message}</div>`;
+                }
+            }
+        }
+
+        /**
+         * 组件数据加载
+         * @param {ComponentPriorityItem} component - 组件元数据
+         * @param {Object} allocation - 资源分配结果
+         * @returns {Promise<Object>} 加载结果
+         */
+        function loadComponentData(component, allocation) {
+            return new Promise((resolve, reject) => {
+                //加载耗时
+                const baseLoadTime = component.resource需求.loadTime;
+                const resourceRatio = (allocation.cpu + allocation.gpu + allocation.memory / component.resource需求.memory) / 3;
+                const actualLoadTime = Math.max(200, Math.floor(baseLoadTime / Math.max(0.5, resourceRatio)));
+
+                //超时处理
+                if (actualLoadTime > CONFIG.LOAD_TIMEOUT) {
+                    setTimeout(() => {
+                        reject(new Error('加载超时'));
+                    }, CONFIG.LOAD_TIMEOUT);
+                    return;
+                }
+
+                //数据请求
+                setTimeout(() => {
+                    // 生成测试数据
+                    let mockData = {};
+                    switch (component.type) {
+                        case 'map':
+                            mockData = { regions: component.props.extra.options, activeRegion: '全球', data: [65, 32, 48, 29, 15] };
+                            break;
+                        case 'chart':
+                            if (component.props.extra.chartType === 'line') {
+                                mockData = { xAxis: ['1月', '2月', '3月', '4月', '5月'], series: [120, 200, 150, 250, 180] };
+                            } else {
+                                mockData = { labels: ['产品A', '产品B', '产品C', '产品D'], values: [35, 25, 20, 20] };
+                            }
+                            break;
+                        case 'table':
+                            mockData = {
+                                headers: ['任务名称', '负责人', '进度', '截止日期'],
+                                rows: [
+                                    ['项目一期开发', '张三', '80%', '2024-12-31'],
+                                    ['数据迁移', '李四', '60%', '2024-11-15'],
+                                    ['系统测试', '王五', '90%', '2024-10-30']
+                                ]
+                            };
+                            break;
+                        case 'select':
+                            mockData = { options: component.props.extra.options, value: '全球' };
+                            break;
+                        case 'button':
+                            mockData = { label: component.props.extra.label, disabled: false };
+                            break;
+                    }
+
+                    resolve({
+                        success: true,
+                        data: mockData,
+                        loadTime: actualLoadTime,
+                        resourceUsage: allocation
+                    });
+                }, actualLoadTime);
+            });
+        }
+
+        /**
+
+
+        /**
+         * 主函数
+         */
+        async function main() {
+            try {
+                // 1. 属性清洗
+                const standardMetadata = cleanComponentMetadata(COMPONENT_PRIORITY_CONFIG_LIBRARY);
+
+                // 2. 依赖关系解析
+                const dependencyGraph = parseDependencyRelations(standardMetadata);
+
+                // 3. 构建组件优先级序列
+                const prioritySequence = buildComponentPrioritySequence(standardMetadata, dependencyGraph);
+
+                // 4. 层次排序筛选核心组件
+                const coreComponents = filterCoreComponents(prioritySequence);
+
+                // 5. 渲染资源维度扩张
+                const resourceAdaptationSequence = expandResourceDimension(prioritySequence);
+
+                // 6. 获取系统实时资源状态
+                const resourceState = await getRealTimeResourceState();
+
+                // 7. 计算资源充足度
+                const resourceAdequacy = calculateResourceAdequacy(resourceState, resourceAdaptationSequence);
+
+                // 8. 自适应注意力机制校准优先级
+                const preciseSequence = calibratePriorityWithAttentionMechanism(resourceAdaptationSequence, resourceState, resourceAdequacy);
+
+                // 9. 并行渲染顺序筛选
+                const targetSequence = filterParallelRenderSequence(coreComponents, preciseSequence, dependencyGraph);
+
+                // 10. 贪心算法进行渲染资源分配
+                const allocationResult = allocateRenderResources(targetSequence, resourceState);
+
+                // 11. 执行界面渲染
+                await executeRender(targetSequence, allocationResult.resourceAllocation);
+
+            } catch (error) {
+                console.error('渲染过程出错:', error);
+                // 显示错误信息
+                const loadingMask = document.getElementById('loadingMask');
+                if (loadingMask) {
+                    loadingMask.innerHTML = '<div style="color: red;">系统加载失败，请刷新页面重试</div>';
+                }
+            }
+        }
+
+        // 页面加载完成后执行
+        window.addEventListener('DOMContentLoaded', main);
+        /**
+         * 更新组件内容
+         * @param {HTMLElement} element - 组件DOM元素
+         * @param {ComponentPriorityItem} component - 组件元数据
+         * @param {Object} loadResult - 加载结果
+         */
+        function updateComponentContent(element, component, loadResult) {
+            const contentElement = element.querySelector('.component-content');
+            if (!contentElement) return;
+
+            const data = loadResult.data;
+
+            switch (component.type) {
+                case 'map':
+                    contentElement.innerHTML = `
+                        <div style="width:100%;height:100%;text-align:center;">
+                            <div style="margin-bottom:16px;">${data.activeRegion}业务分布</div>
+                            <div style="display:flex;justify-content:space-around;align-items:center;height:60%;">
+                                ${(data.regions || []).map((region, index) => `
+                                    <div style="text-align:center;">
+                                        <div style="width:60px;height:60px;border-radius:50%;background:#1890ff;opacity:${(data.data && data.data[index] ? data.data[index]/100 : 0)};display:flex;justify-content:center;align-items:center;color:white;margin:0 auto;">
+                                            ${(data.data && data.data[index] ? data.data[index] : 0)}%
+                                        </div>
+                                        <div style="margin-top:8px;font-size:12px;">${region}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'chart':
+                    if (component.props.extra.chartType === 'line') {
+                        // 模拟折线图
+                        contentElement.innerHTML = `
+                            <div style="width:100%;height:100%;">
+                                <div style="font-size:12px;color:#666;margin-bottom:8px;">${component.props.extra.title}</div>
+                                <div style="display:flex;align-items: flex-end;height:80%;gap:10px;padding-bottom:20px;">
+                                    ${(data.series || []).map((value, index) => `
+                                        <div style="flex:1;display:flex;flex-direction:column;align-items:center;">
+                                            <div style="width:20px;background:#1890ff;margin:0 auto;height:${value}px;"></div>
+                                            <div style="font-size:11px;margin-top:4px;">${data.xAxis && data.xAxis[index] ? data.xAxis[index] : ''}</div>
+                                            <div style="font-size:11px;">${value}</div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        // 模拟饼图
+                        contentElement.innerHTML = `
+                            <div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;">
+                                <div style="width:150px;height:150px;border-radius:50%;position:relative;overflow:hidden;border:1px solid #eee;">
+                                    ${(() => {
+                                        let startAngle = 0;
+                                        return (data.values || []).map((value, index) => {
+                                            const angle = (value / 100) * 360;
+                                            const color = ['#1890ff', '#52c41a', '#faad14', '#ff4d4f'][index % 4];
+                                            const style = `
+                                                position:absolute;
+                                                width:100%;
+                                                height:100%;
+                                                clip-path: polygon(50% 50%, 50% 0, ${50 + 50 * Math.cos((startAngle + angle) * Math.PI / 180)}% ${50 - 50 * Math.sin((startAngle + angle) * Math.PI / 180)}%, ${50 + 50 * Math.cos(startAngle * Math.PI / 180)}% ${50 - 50 * Math.sin(startAngle * Math.PI / 180)}%);
+                                                background:${color};
+                                            `;
+                                            startAngle += angle;
+                                            return `<div style="${style}"></div>`;
+                                        }).join('');
+                                    })()}
+                                    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:14px;font-weight:600;">${component.props.extra.title}</div>
+                                </div>
+                                <div style="margin-left:20px;">
+                                    ${(data.labels || []).map((label, index) => `
+                                        <div style="display:flex;align-items:center;margin-bottom:8px;">
+                                            <div style="width:12px;height:12px;background:${['#1890ff', '#52c41a', '#faad14', '#ff4d4f'][index % 4]};margin-right:8px;"></div>
+                                            <div style="font-size:12px;">${label}: ${data.values && data.values[index] ? data.values[index] : 0}%</div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }
+                    break;
+                case 'table':
+                    contentElement.innerHTML = `
+                        <table style="width:100%;height:100%;border-collapse:collapse;font-size:12px;">
+                            <thead>
+                                <tr style="background:#f5f7fa;">
+                                    ${(data.headers || []).map(header => `<th style="border:1px solid #eee;padding:8px;text-align:center;">${header}</th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${(data.rows || []).map(row => `
+                                    <tr>
+                                        ${(row || []).map(cell => `<td style="border:1px solid #eee;padding:8px;text-align:center;">${cell}</td>`).join('')}
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                    break;
+                case 'select':
+                    contentElement.innerHTML = `
+                        <select style="width:100%;height:36px;padding:0 8px;border:1px solid #d9d9d9;border-radius:4px;outline:none;">
+                            ${(data.options || []).map(option => `<option value="${option}" ${option === data.value ? 'selected' : ''}>${option}</option>`).join('')}
+                        </select>
+                    `;
+                    break;
+                case 'button':
+                    contentElement.innerHTML = `
+                        <button style="width:100%;height:36px;border:none;border-radius:4px;background:#1890ff;color:white;cursor:pointer;font-size:14px;">
+                            ${data.label || ''}
+                        </button>
+                    `;
+                    break;
+            }
+        }
+
+      
+        async function initPriorityRender() {
+            try {
+                console.log('=== 执行界面优先渲染流程 ===');
+
+                //获取元数据
+                console.log('属性清洗与优先级序列构建');
+                const standardMetadata = cleanComponentMetadata(COMPONENT_PRIORITY_CONFIG_LIBRARY);
+                const dependencyGraph = parseDependencyRelations(standardMetadata);
+                const componentPrioritySequence = buildComponentPrioritySequence(standardMetadata, dependencyGraph);
+                console.log('组件优先级序列：', componentPrioritySequence.map(c => ({ id: c.id, score: c.priorityScore })));
+
+                //层次排序算法筛选核心组件
+                console.log('核心组件筛选');
+                const corePrioritySequence = filterCoreComponents(componentPrioritySequence);
+                console.log('核心优先组件序列：', corePrioritySequence.map(c => ({ id: c.id, score: c.comprehensiveScore })));
+
+                //资源维度扩张
+                console.log('资源适配与优先级校准');
+                const resourceAdaptationSequence = expandResourceDimension(componentPrioritySequence);
+                const resourceState = await getRealTimeResourceState();
+                const resourceAdequacy = calculateResourceAdequacy(resourceState, resourceAdaptationSequence);
+                const precisePrioritySequence = calibratePriorityWithAttentionMechanism(resourceAdaptationSequence, resourceState, resourceAdequacy);
+                console.log('精准优先组件序列：', precisePrioritySequence.map(c => ({ id: c.id, score: c.calibratedScore })));
+
+                //并行渲染顺序筛选
+                console.log('目标渲染序列生成');
+                const targetRenderSequence = filterParallelRenderSequence(corePrioritySequence, precisePrioritySequence, dependencyGraph);
+                console.log('目标渲染组件序列：', targetRenderSequence.map(c => c.id));
+
+                //资源分配
+                console.log('资源分配与渲染执行');
+                const { resourceAllocation } = allocateRenderResources(targetRenderSequence, resourceState);
+                await executeRender(targetRenderSequence, resourceAllocation);
+
+                console.log('=== 界面优先渲染流程执行完成 ===');
+            } catch (error) {
+                console.error('渲染流程执行失败：', error);
+                const loadingMask = document.getElementById('loadingMask');
+                if (loadingMask) {
+                    loadingMask.innerHTML = `
+                        <div style="color:#dc2626;">渲染失败</div>
+                        <div style="margin-top:8px;font-size:14px;">${error.message}</div>
+                    `;
+                }
+            }
+        }
+
+        // 页面加载完成后启动渲染流程
+        window.addEventListener('load', initPriorityRender);
+    </script>
+</body>
+</html>

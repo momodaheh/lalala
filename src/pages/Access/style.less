@@ -1,0 +1,31 @@
+.testStyle {
+  .semi-chat-container {
+    overflow-y: scroll;
+    overflow-x: hidden;
+    scrollbar-gutter: unset;
+    -ms-overflow-style: auto;
+
+    &::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    /********** 修复2：默认滑块透明（隐藏） **********/
+    &::-webkit-scrollbar-thumb {
+      background: transparent;
+      border-radius: 4px;
+      transition: background 0.2s; /* 顺滑过渡 */
+    }
+  }
+
+  .semi-chat-container:hover {
+    /********** 修复3：hover显示滑块 **********/
+    &::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 20%);
+    }
+  }
+}

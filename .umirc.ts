@@ -1,6 +1,8 @@
 import { defineConfig } from '@umijs/max';
 
 export default defineConfig({
+  // esbuild 压缩时把 helper 函数包进 IIFE，避免多 chunk 顶层变量重名冲突
+  esbuildMinifyIIFE: true,
   antd: {},
   access: {},
   dva: {},

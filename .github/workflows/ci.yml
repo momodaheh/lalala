@@ -1,0 +1,32 @@
+name: CI
+
+# 什么时候触发：push 到 main 分支时
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 第一步：拉取代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 第二步：安装 Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # 第三步：安装依赖
+      # --legacy-peer-deps：@formily/antd 声明的 peer（icons@4.x）与实际安装的 icons@5.x 冲突，
+      # npm ci 校验依赖树时会直接 ERESOLVE 失败，需宽容处理 peer 冲突
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      # 第四步：构建
+      - name: Build
+        run: npm run build

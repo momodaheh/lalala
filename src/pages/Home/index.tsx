@@ -25,7 +25,7 @@ const HomePage: React.FC = () => {
     <PageContainer ghost>
       <div className={styles.container}>
         <motion.div className="bg-lime-600 p-4 mb-4" animate={{ rotate: 360 }}>
-          1333333
+          1333333wyz33333
         </motion.div>
         <Select
           mode="multiple"
@@ -72,11 +72,9 @@ const HomePage: React.FC = () => {
             666
           </div>
         </div>
-        <div 
-          style={{display: 'flex'}}
-        >
-          <div style={{width: 100, height: 100, backgroundColor: 'green'}} />
-          <div style={{width: 100, height: 100, backgroundColor: 'blue'}} />
+        <div style={{ display: 'flex' }}>
+          <div style={{ width: 100, height: 100, backgroundColor: 'green' }} />
+          <div style={{ width: 100, height: 100, backgroundColor: 'blue' }} />
         </div>
       </div>
     </PageContainer>

@@ -25,7 +25,7 @@ const HomePage: React.FC = () => {
     <PageContainer ghost>
       <div className={styles.container}>
         <motion.div className="bg-lime-600 p-4 mb-4" animate={{ rotate: 360 }}>
-          1333333wyz33333test
+          1333333wyz33333test2
         </motion.div>
         <Select
           mode="multiple"
